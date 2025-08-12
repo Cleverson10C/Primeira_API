@@ -5,7 +5,8 @@ from datetime import datetime
 app = Flask(__name__)
 
 # Configuração do banco de dados SQLite
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///biblioteca.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://' \
+'postgres:kgpPvAweRIhgSRwj@db.bmornebvmwqbznoeweke.supabase.co:5432/postgres'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['x-access-token'] = 'x-access-token'
 app.config['SECRET_KEY'] = 'sua-chave-secreta-super-segura-aqui-123456'
