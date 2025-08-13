@@ -6,6 +6,13 @@ import os
 from datetime import datetime, timedelta
 from functools import wraps
 
+# NOVO: Carregar variáveis de ambiente
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # Rota de proteção de token
 def token_obrigatorio(f):   
     @wraps(f)
@@ -41,39 +48,39 @@ def token_obrigatorio(f):
 # CORRIGIDO: Suporte a GET e POST para login
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    if request.method == 'GET':
-        return jsonify({
-            'mensagem': 'Use método POST ou Basic Auth para fazer login',
-            'exemplo': {
-                'method': 'POST',
-                'headers': {'Content-Type': 'application/json'},
-                'body': {'email': 'cleversonpassos35@gmail.com', 'senha': '123456'}
-            }
-        })
-    
-    # POST - JSON login
-    if request.method == 'POST' and request.is_json:
-        dados = request.get_json()
-        username = dados.get('email') or dados.get('nome')
-        password = dados.get('senha')
+    try:
+        if request.method == 'GET':
+            return jsonify({
+                'mensagem': 'Use método POST ou Basic Auth para fazer login',
+                'exemplo': {
+                    'method': 'POST',
+                    'headers': {'Content-Type': 'application/json'},
+                    'body': {'email': 'cleversonpassos35@gmail.com', 'senha': '123456'}
+                },
+                'status': 'API funcionando'
+            })
         
-        if not username or not password:
-            return jsonify({'erro': 'Email/nome e senha são obrigatórios'}), 400
+        # POST - JSON login
+        if request.method == 'POST' and request.is_json:
+            dados = request.get_json()
+            username = dados.get('email') or dados.get('nome')
+            password = dados.get('senha')
             
-        usuario = Autor.query.filter(
-            (Autor.nome == username) | (Autor.email == username)
-        ).first()
-        
-        if not usuario or password != usuario.senha:
-            return jsonify({'erro': 'Credenciais inválidas'}), 401
+            if not username or not password:
+                return jsonify({'erro': 'Email/nome e senha são obrigatórios'}), 400
+                
+            usuario = Autor.query.filter(
+                (Autor.nome == username) | (Autor.email == username)
+            ).first()
             
-        try:
+            if not usuario or password != usuario.senha:
+                return jsonify({'erro': 'Credenciais inválidas'}), 401
+                
             token = jwt.encode({
                 'id_autor': usuario.id_autor, 
                 'exp': datetime.utcnow() + timedelta(minutes=30)
             }, app.config['SECRET_KEY'], algorithm='HS256')
             
-            # Se token for bytes, converter para string
             if isinstance(token, bytes):
                 token = token.decode('utf-8')
                 
@@ -82,48 +89,63 @@ def login():
                 'usuario': usuario.to_dict(),
                 'expires_in': '30 minutos'
             })
-        except Exception as e:
-            return jsonify({'erro': f'Erro ao gerar token: {str(e)}'}), 500
-    
-    # Basic Auth (método original)
-    auth = request.authorization
-    if not auth or not auth.username or not auth.password:
-        return make_response('Login inválido', 401, {'WWW-Authenticate': 'Basic realm="Login obrigatório"'})
         
-    usuario = Autor.query.filter_by(nome=auth.username).first()
-    if not usuario:
-        return make_response('Login inválido', 401, {'WWW-Authenticate': 'Basic realm="Login obrigatório"'})
+        # Basic Auth
+        auth = request.authorization
+        if not auth or not auth.username or not auth.password:
+            return make_response('Login inválido', 401, {'WWW-Authenticate': 'Basic realm="Login obrigatório"'})
+            
+        usuario = Autor.query.filter_by(nome=auth.username).first()
+        if not usuario or auth.password != usuario.senha:
+            return make_response('Login inválido', 401, {'WWW-Authenticate': 'Basic realm="Login obrigatório"'})
+            
+        token = jwt.encode({
+            'id_autor': usuario.id_autor, 
+            'exp': datetime.utcnow() + timedelta(minutes=30)
+        }, app.config['SECRET_KEY'], algorithm='HS256')
         
-    if auth.password == usuario.senha:
-        try:
-            token = jwt.encode({
-                'id_autor': usuario.id_autor, 
-                'exp': datetime.utcnow() + timedelta(minutes=30)
-            }, app.config['SECRET_KEY'], algorithm='HS256')
+        if isinstance(token, bytes):
+            token = token.decode('utf-8')
             
-            if isinstance(token, bytes):
-                token = token.decode('utf-8')
-                
-            return jsonify({'Token': token})
-        except Exception as e:
-            return jsonify({'erro': f'Erro ao gerar token: {str(e)}'}), 500
-            
-    return make_response('Login inválido', 401, {'WWW-Authenticate': 'Basic realm="Login obrigatório"'})
+        return jsonify({'Token': token})
+        
+    except Exception as e:
+        return jsonify({
+            'erro': f'Erro interno no login: {str(e)}',
+            'tipo': type(e).__name__
+        }), 500
+
+# NOVO: Rota de health check
+@app.route('/health')
+def health_check():
+    try:
+        # Testar conexão com banco
+        total_autores = Autor.query.count()
+        return jsonify({
+            'status': 'OK',
+            'database': 'conectado',
+            'total_autores': total_autores,
+            'timestamp': datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'ERROR',
+            'database': 'erro',
+            'erro': str(e)
+        }), 500
 
 # Rota principal - informações da API
 @app.route('/')
 def home():
     return jsonify({
-        'mensagem': 'Bem-vindo à API de Autores e Postagens!',
+        'mensagem': 'API de Autores e Postagens funcionando!',
         'versao': '1.0',
+        'deploy': 'Render',
         'rotas_disponiveis': {
+            'GET /health': 'Status da API',
             'POST /login': 'Fazer login',
             'GET /postagens': 'Listar postagens (requer token)',
             'GET /autores': 'Listar autores (requer token)',
-            'GET /autores/<id>': 'Obter autor específico (requer token)',
-            'POST /autores': 'Criar autor (requer token)',
-            'PUT /autores/<id>': 'Atualizar autor (requer token)',
-            'DELETE /autores/<id>': 'Excluir autor (requer token)'
         },
         'autenticacao': {
             'usuario_padrao': 'Cleverson Passos',
@@ -160,7 +182,7 @@ def obter_postagens(autor):
 # CORRIGIDO: Obter autores
 @app.route('/autores')
 @token_obrigatorio
-def obter_autores(autor_logado):  # Nome diferente para evitar conflito
+def obter_autores(autor_logado):
     try:
         autores = Autor.query.all()
         lista_de_autores = []
@@ -295,25 +317,10 @@ def excluir_autor(autor_logado, id_autor):
         db.session.rollback()
         return jsonify({'erro': f'Erro interno: {str(e)}'}), 500
 
-# CORRIGIDO: Configuração para produção e desenvolvimento
+# CORRIGIDO: Configuração final
 if __name__ == '__main__':
-    # Detectar se está em produção
     port = int(os.environ.get('PORT', 5000))
-    host = os.environ.get('HOST', '0.0.0.0')  # 0.0.0.0 para produção
-    debug = os.environ.get('DEBUG', 'True').lower() == 'true'
     
-    print("🚀 Iniciando API...")
-    print(f"📍 Host: {host}")
-    print(f"🔌 Port: {port}")
-    print(f"🐛 Debug: {debug}")
-    print("🔑 Credenciais padrão:")
-    print("   - User: Cleverson Passos")
-    print("   - Email: cleversonpassos35@gmail.com")
-    print("   - Pass: 123456")
-    
-    app.run(
-        host=host,
-        port=port, 
-        debug=debug
-    )
+    # CORRIGIDO: Para Render sempre usar 0.0.0.0
+    app.run(host='0.0.0.0', port=port, debug=False)
 
