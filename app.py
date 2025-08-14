@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, request, make_response
-from estrutura_banco_de_dados import Autor, Postagem, app, db
+from Primeira_API.estrutura_banco_de_dados import Autor, Postagem, app, db
 import json
 import jwt
 from datetime import datetime, timedelta
