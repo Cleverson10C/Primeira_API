@@ -1,9 +1,18 @@
 from flask import Flask, jsonify, request, make_response
-from Primeira_API.estrutura_banco_de_dados import Autor, Postagem, app, db
+# CORRIGIDO: Import direto já que estamos na mesma pasta
+from estrutura_banco_de_dados import Autor, Postagem, app, db
 import json
 import jwt
+import os
 from datetime import datetime, timedelta
 from functools import wraps
+
+# NOVO: Carregar variáveis de ambiente
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # Rota de proteção de token
 def token_obrigatorio(f):   
@@ -13,125 +22,299 @@ def token_obrigatorio(f):
         # Verificar se um token foi enviado
         if 'x-access-token' in request.headers:
             token = request.headers['x-access-token']
+        elif 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
+            if auth_header.startswith('Bearer '):
+                token = auth_header[7:]
+                
         if not token:
-            return jsonify({'Mensagem': 'Token não foi incluído!'}, 401)
+            return jsonify({'Mensagem': 'Token não foi incluído!'}), 401
+            
         # Se temos um token, validar acesso consultando o BD
         try:
-            resultado = jwt.decode(token,app.config['SECRET_KEY'],algorithms=["HS256"])
-            autor = Autor.query.filter_by(
-                id_autor=resultado['id_autor']).first()
-        except:
-            return jsonify({'Mensagem': 'Token é inválido'}, 401)
+            resultado = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+            autor = Autor.query.filter_by(id_autor=resultado['id_autor']).first()
+            if not autor:
+                return jsonify({'Mensagem': 'Usuário não encontrado'}), 401
+        except jwt.ExpiredSignatureError:
+            return jsonify({'Mensagem': 'Token expirado'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'Mensagem': 'Token é inválido'}), 401
+        except Exception as e:
+            return jsonify({'Mensagem': f'Erro no token: {str(e)}'}), 401
+            
         return f(autor, *args, **kwargs)
     return decorated
 
 # Rota de login - POST https://localhost:5000/login
-@app.route('/login')
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    auth = request.authorization
-    if not auth or not auth.username or not auth.password:
-        return make_response('Login inválido', 401, {'WWW-Authenticate': 'Basic realm="Login obrigatório"'})
-    usuario = Autor.query.filter_by(nome=auth.username).first()
-    if not usuario:
-        return make_response('Login inválido', 401, {'WWW-Authenticate': 'Basic realm="Login obrigatório"'})
-    if auth.password == usuario.senha:
-        token = jwt.encode({'id_autor': usuario.id_autor, 'exp': datetime.utcnow(
-        ) + timedelta(minutes=30)}, app.config['SECRET_KEY'])
-        return jsonify({'Token':token})
-    return make_response('Login inválido', 401, {'WWW-Authenticate': 'Basic realm="Login obrigatório"'})
+    try:
+        if request.method == 'GET':
+            return jsonify({
+                'mensagem': 'Use método POST ou Basic Auth para fazer login',
+                'exemplo': {
+                    'method': 'POST',
+                    'headers': {'Content-Type': 'application/json'},
+                    'body': {'email': 'cleversonpassos35@gmail.com', 'senha': '123456'}
+                },
+                'status': 'API funcionando'
+            })
+        
+        # POST - JSON login
+        if request.method == 'POST' and request.is_json:
+            dados = request.get_json()
+            username = dados.get('email') or dados.get('nome')
+            password = dados.get('senha')
+            
+            if not username or not password:
+                return jsonify({'erro': 'Email/nome e senha são obrigatórios'}), 400
+                
+            usuario = Autor.query.filter(
+                (Autor.nome == username) | (Autor.email == username)
+            ).first()
+            
+            if not usuario or password != usuario.senha:
+                return jsonify({'erro': 'Credenciais inválidas'}), 401
+                
+            token = jwt.encode({
+                'id_autor': usuario.id_autor, 
+                'exp': datetime.utcnow() + timedelta(minutes=30)
+            }, app.config['SECRET_KEY'], algorithm='HS256')
+            
+            if isinstance(token, bytes):
+                token = token.decode('utf-8')
+                
+            return jsonify({
+                'token': token,
+                'usuario': usuario.to_dict(),
+                'expires_in': '30 minutos'
+            })
+        
+        # Basic Auth
+        auth = request.authorization
+        if not auth or not auth.username or not auth.password:
+            return make_response('Login inválido', 401, {'WWW-Authenticate': 'Basic realm="Login obrigatório"'})
+            
+        usuario = Autor.query.filter_by(nome=auth.username).first()
+        if not usuario or auth.password != usuario.senha:
+            return make_response('Login inválido', 401, {'WWW-Authenticate': 'Basic realm="Login obrigatório"'})
+            
+        token = jwt.encode({
+            'id_autor': usuario.id_autor, 
+            'exp': datetime.utcnow() + timedelta(minutes=30)
+        }, app.config['SECRET_KEY'], algorithm='HS256')
+        
+        if isinstance(token, bytes):
+            token = token.decode('utf-8')
+            
+        return jsonify({'token': token})
+        
+    except Exception as e:
+        return jsonify({
+            'erro': f'Erro interno no login: {str(e)}',
+            'tipo': type(e).__name__
+        }), 500
 
-# Obter postagens - GET https://localhost:5000/
+# NOVO: Health check
+@app.route('/health')
+def health_check():
+    try:
+        total_autores = Autor.query.count()
+        return jsonify({
+            'status': 'OK',
+            'database': 'conectado',
+            'total_autores': total_autores,
+            'timestamp': datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'ERROR',
+            'database': 'erro',
+            'erro': str(e)
+        }), 500
+
 @app.route('/')
+def home():
+    return jsonify({
+        'mensagem': 'API de Autores e Postagens funcionando!',
+        'versao': '1.0',
+        'deploy': 'Render',
+        'rotas_disponiveis': {
+            'GET /health': 'Status da API',
+            'POST /login': 'Fazer login',
+            'GET /postagens': 'Listar postagens (requer token)',
+            'GET /autores': 'Listar autores (requer token)',
+        },
+        'autenticacao': {
+            'usuario_padrao': 'Cleverson Passos',
+            'senha_padrao': '123456',
+            'email_padrao': 'cleversonpassos35@gmail.com'
+        }
+    })
+
+# Obter postagens - GET https://localhost:5000/postagens
+@app.route('/postagens')
 @token_obrigatorio
 def obter_postagens(autor): 
-    postagens = Postagem.query.all()
-
-    list_postagens = []
-    for postagem in postagens:
-        postagem_atual = {}
-        postagem_atual['titulo'] = postagem.titulo
-        postagem_atual['id_autor'] = postagem.id_autor
-        list_postagens.append(postagem_atual)
-    return jsonify({'postagens': list_postagens})
+    try:
+        postagens = Postagem.query.all()
+        list_postagens = []
+        
+        for postagem in postagens:
+            postagem_atual = {
+                'id_postagem': postagem.id_postagem,
+                'titulo': postagem.titulo,
+                'conteudo': postagem.conteudo,
+                'id_autor': postagem.id_autor,
+                'data_criacao': postagem.data_criacao.isoformat() if postagem.data_criacao else None
+            }
+            list_postagens.append(postagem_atual)
+            
+        return jsonify({
+            'postagens': list_postagens,
+            'total': len(list_postagens)
+        })
+    except Exception as e:
+        return jsonify({'erro': f'Erro interno: {str(e)}'}), 500
 
 # Obter autores - GET https://localhost:5000/autores
 @app.route('/autores')
 @token_obrigatorio
-def obter_autores(autor):
-    autores = Autor.query.all()
-    lista_de_autores = []
-    for autor in autores:
-        autor_atual = {}
-        autor_atual['id_autor'] = autor.id_autor
-        autor_atual['nome'] = autor.nome
-        autor_atual['email'] = autor.email
-        lista_de_autores.append(autor_atual)
+def obter_autores(autor_logado):
+    try:
+        autores = Autor.query.all()
+        lista_de_autores = []
+        
+        for autor_item in autores:
+            autor_atual = {
+                'id_autor': autor_item.id_autor,
+                'nome': autor_item.nome,
+                'email': autor_item.email,
+                'admin': autor_item.admin if hasattr(autor_item, 'admin') else False
+            }
+            lista_de_autores.append(autor_atual)
 
-    return jsonify({'autores': lista_de_autores})
+        return jsonify({
+            'autores': lista_de_autores,
+            'total': len(lista_de_autores)
+        })
+    except Exception as e:
+        return jsonify({'erro': f'Erro interno: {str(e)}'}), 500
 
 # Obter autor por id - GET https://localhost:5000/autores/1
 @app.route('/autores/<int:id_autor>', methods=['GET'])
 @token_obrigatorio
-def obter_autor_por_id(autor, id_autor):
-    autor = Autor.query.filter_by(id_autor=id_autor).first()
-    if not autor:
-        return jsonify(f'Autor não encontrado!')
-    autor_atual = {}
-    autor_atual['id_autor'] = autor.id_autor
-    autor_atual['nome'] = autor.nome
-    autor_atual['email'] = autor.email
+def obter_autor_por_id(autor_logado, id_autor):
+    try:
+        autor_encontrado = Autor.query.filter_by(id_autor=id_autor).first()
+        if not autor_encontrado:
+            return jsonify({'erro': 'Autor não encontrado'}), 404
+            
+        autor_atual = {
+            'id_autor': autor_encontrado.id_autor,
+            'nome': autor_encontrado.nome,
+            'email': autor_encontrado.email,
+            'admin': autor_encontrado.admin if hasattr(autor_encontrado, 'admin') else False
+        }
 
-    return jsonify({'autor': autor_atual})
+        return jsonify({'autor': autor_atual})
+    except Exception as e:
+        return jsonify({'erro': f'Erro interno: {str(e)}'}), 500
 
-# Obter autores - POST https://localhost:5000/autores
+# Criar novo autor - POST https://localhost:5000/autores
 @app.route('/autores', methods=['POST'])
 @token_obrigatorio
-def novo_autor(autor):
-    novo_autor = request.get_json()
-    autor = Autor(
-        nome=novo_autor['nome'], senha=novo_autor['senha'], email=novo_autor['email'])
+def novo_autor(autor_logado):
+    try:
+        dados = request.get_json()
+        
+        if not dados:
+            return jsonify({'erro': 'Dados não fornecidos'}), 400
+            
+        if not all(key in dados for key in ['nome', 'email', 'senha']):
+            return jsonify({'erro': 'Nome, email e senha são obrigatórios'}), 400
+        
+        autor_existente = Autor.query.filter_by(email=dados['email']).first()
+        if autor_existente:
+            return jsonify({'erro': 'Email já cadastrado'}), 400
+        
+        novo_autor_obj = Autor(
+            nome=dados['nome'],
+            senha=dados['senha'],
+            email=dados['email'],
+            admin=dados.get('admin', False)
+        )
 
-    db.session.add(autor)
-    db.session.commit()
+        db.session.add(novo_autor_obj)
+        db.session.commit()
 
-    return jsonify({'Mensagem': 'Usuário criado com sucesso'}, 200)
+        return jsonify({
+            'mensagem': 'Usuário criado com sucesso',
+            'autor': novo_autor_obj.to_dict()
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'erro': f'Erro interno: {str(e)}'}), 500
 
-# Obter autor por id - GET https://localhost:5000/autores/1
+# NOVO: Alterar autor - PUT https://localhost:5000/autores/1
 @app.route('/autores/<int:id_autor>', methods=['PUT'])
 @token_obrigatorio
-def alterar_autor(autor, id_autor):
-    usuario_a_alterar = request.get_json()
-    autor = Autor.query.filter_by(id_autor=id_autor).first()
-    if not autor:
-        return jsonify({'Mensagem': 'Este usuário não foi encontrado'})
+def alterar_autor(autor_logado, id_autor):
     try:
-        autor.nome = usuario_a_alterar['nome']
-    except:
-        pass
-    try:
-        autor.email = usuario_a_alterar['email']
-    except:
-        pass
-    try:
-        autor.senha = usuario_a_alterar['senha']
-    except:
-        pass
+        dados = request.get_json()
+        autor_para_alterar = Autor.query.filter_by(id_autor=id_autor).first()
+        
+        if not autor_para_alterar:
+            return jsonify({'erro': 'Autor não encontrado'}), 404
+            
+        if not dados:
+            return jsonify({'erro': 'Dados não fornecidos'}), 400
+        
+        # Atualizar campos se fornecidos
+        if 'nome' in dados:
+            autor_para_alterar.nome = dados['nome']
+        if 'email' in dados:
+            # Verificar se email já existe (exceto para o próprio autor)
+            email_existente = Autor.query.filter_by(email=dados['email']).first()
+            if email_existente and email_existente.id_autor != id_autor:
+                return jsonify({'erro': 'Email já cadastrado'}), 400
+            autor_para_alterar.email = dados['email']
+        if 'senha' in dados:
+            autor_para_alterar.senha = dados['senha']
+        if 'admin' in dados and hasattr(autor_para_alterar, 'admin'):
+            autor_para_alterar.admin = dados['admin']
 
-    db.session.commit()
-    return jsonify({'Mensagem': 'Usuário alterado com sucesso!'})
+        db.session.commit()
+        return jsonify({
+            'mensagem': 'Usuário alterado com sucesso!',
+            'autor': autor_para_alterar.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'erro': f'Erro interno: {str(e)}'}), 500
 
-# Obter autor por id - DELETE https://localhost:5000/autores/1
+# Excluir autor - DELETE https://localhost:5000/autores/1
 @app.route('/autores/<int:id_autor>', methods=['DELETE'])
 @token_obrigatorio
-def excluir_autor(autor, id_autor):
-    autor_existente = Autor.query.filter_by(id_autor=id_autor).first()
-    if not autor_existente:
-        return jsonify({'Mensagem': 'Este autor não foi encontrado'})
-    db.session.delete(autor_existente)
-    db.session.commit()
+def excluir_autor(autor_logado, id_autor):
+    try:
+        autor_existente = Autor.query.filter_by(id_autor=id_autor).first()
+        if not autor_existente:
+            return jsonify({'erro': 'Autor não encontrado'}), 404
 
-    return jsonify({'Mensagem': 'Autor excluído com sucesso!'})
- 
+        db.session.delete(autor_existente)
+        db.session.commit()
 
-app.run(port=5000, host='localhost', debug=True)
+        return jsonify({'mensagem': 'Autor excluído com sucesso!'})
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'erro': f'Erro interno: {str(e)}'}), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
 
